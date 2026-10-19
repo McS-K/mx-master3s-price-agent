@@ -8,8 +8,8 @@ URL_IDEALO = "https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html
 TARGET_PRICE = 90.0
 
 def send_telegram_alert(price, link):
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN").strip()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID").strip()
     
     if not bot_token or not chat_id:
         print("Error: Telegram configuration secrets missing.")
