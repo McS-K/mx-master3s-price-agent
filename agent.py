@@ -4,7 +4,7 @@ from curl_cffi import requests
 # Возвращаем отслеживание всего рынка через KuantoKusta
 URL_KK = "https://kuantokusta.pt"
 API_URL = "https://kuantokusta.pt"
-TARGET_PRICE = 75.0
+TARGET_PRICE = 70.0
 
 def send_telegram_alert(price, link):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
