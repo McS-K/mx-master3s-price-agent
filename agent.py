@@ -14,13 +14,13 @@ from curl_cffi import requests
 PRODUCTS = [
     {
         "name": "Logitech MX Master 3S",
-        "url": os.environ.get("https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html", "").strip(),
+        "url": "https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html",
         "target": 70.0,         # Test value, replace with the real threshold later
         "min_plausible": 40.0,  # Anything below is treated as a parsing error
     },
     {
         "name": "Logitech MX Keys S Combo",
-        "url": os.environ.get("https://www.idealo.es/precios/202841996/logitech-mx-keys-s-combo-us.html", "").strip(),
+        "url": "https://www.idealo.es/precios/202841996/logitech-mx-keys-s-combo-us.html",
         "target": 150.0,
         "min_plausible": 60.0,
     },
