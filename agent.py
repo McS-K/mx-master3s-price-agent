@@ -1,8 +1,6 @@
 import os
 import json
 import re
-import urllib.request
-import urllib.parse
 from curl_cffi import requests
 
 # Core configuration setup
@@ -25,33 +23,26 @@ def send_telegram_alert(price, link):
         f"🔗 Deal details page: {link}"
     )
     
-    # SOLUTION: Use urljoin to safely escape the token's colon from the network engine
-    base_url = "https://telegram.org"
-    safe_path = f"bot{bot_token}/sendMessage"
-    telegram_url = urllib.parse.urljoin(base_url, safe_path)
-    
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    
-    print("Dispatching explicit data payloads to the Telegram API using urljoin safe engine...")
+    print("Dispatching explicit data payloads to the Telegram API using OS Native Curl...")
     try:
-        data = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(
-            telegram_url, 
-            data=data, 
-            headers={'Content-Type': 'application/json'},
-            method='POST'
+        # Escaping the message for safe terminal usage
+        safe_message = message.replace('"', '\\"')
+        
+        # Construct a direct OS system command
+        # This completely completely bypasses Python's internal url-parsing quirks
+        cmd = (
+            f'curl -s -X POST "https://telegram.org{bot_token}/sendMessage" '
+            f'-H "Content-Type: application/json" '
+            f'-d "{{\\"chat_id\\": \\"{chat_id}\\", \\"text\\": \\"{safe_message}\\", \\"parse_mode\\": \\"Markdown\\"}}"'
         )
         
-        with urllib.request.urlopen(req, timeout=10) as response:
-            res_body = response.read().decode('utf-8')
+        # Execute the OS level command
+        exit_code = os.system(cmd)
+        if exit_code == 0:
             print("Success! Notification triggered out to Telegram chat.")
+        else:
+            print(f"OS Curl command exited with error code: {exit_code}")
             
-    except urllib.error.HTTPError as e:
-        print(f"Telegram API rejected request (HTTPError): Status {e.code} - {e.read().decode('utf-8')}")
     except Exception as e:
         print(f"Failed running native network alert dispatch: {e}")
 
