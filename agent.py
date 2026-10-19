@@ -5,7 +5,7 @@ from curl_cffi import requests
 
 # Idealo product URL containing unified Iberian market offers
 URL_IDEALO = "https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html"
-TARGET_PRICE = 70.0
+TARGET_PRICE = 90.0
 
 def send_telegram_alert(price, link):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
