@@ -1,13 +1,16 @@
 import os
 import json
 import re
+import urllib.request
+import urllib.parse
 from curl_cffi import requests
 
 # Core configuration setup
 URL_IDEALO = "https://idealo.es"
-TARGET_PRICE = 90.0  # Set to 90.0 to guarantee a successful Telegram connection test!
+TARGET_PRICE = 90.0  # Kept at 90.0 to guarantee a successful Telegram pipeline test!
 
 def send_telegram_alert(price, link):
+    # Fetch environment variables safely
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     
@@ -22,18 +25,33 @@ def send_telegram_alert(price, link):
         f"🔗 Deal details page: {link}"
     )
     
+    # Construct endpoint using explicit variable sanitization
     telegram_url = f"https://telegram.org{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     
-    print("Dispatching explicit data payloads to the Telegram API...")
+    print("Dispatching explicit data payloads to the Telegram API using standard engine...")
     try:
-        response = requests.post(telegram_url, json=payload, timeout=10)
-        if response.status_code == 200:
+        # Convert dictionary payload to clean byte strings to prevent string-formatting errors
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            telegram_url, 
+            data=data, 
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_body = response.read().decode('utf-8')
             print("Success! Notification triggered out to Telegram chat.")
-        else:
-            print(f"Failed sending alert. Telegram API response: {response.text}")
+            
+    except urllib.error.HTTPError as e:
+        print(f"Telegram API rejected request (HTTPError): Status {e.code} - {e.read().decode('utf-8')}")
     except Exception as e:
-        print(f"Failed running network alert dispatch: {e}")
+        print(f"Failed running native network alert dispatch: {e}")
 
 def check_price():
     headers = {
@@ -55,9 +73,7 @@ def check_price():
         html_data = response.text
         price_found = None
 
-        # ----------------------------------------------------
         # LAYER 1: Attempt standard structural JSON extraction
-        # ----------------------------------------------------
         json_ld_matches = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html_data, re.DOTALL)
         for match in json_ld_matches:
             try:
@@ -70,24 +86,19 @@ def check_price():
             except Exception:
                 continue
 
-        # ----------------------------------------------------
         # LAYER 2: Text Engine Fallback (If layout is stripped)
-        # ----------------------------------------------------
         if not price_found:
             print("Structural tags omitted by host defense. Initiating visible layout parsing fallback...")
-            # Look directly for the raw data pattern string '"lowPrice":79.9' or '"lowPrice":"79.90"'
             text_match = re.search(r'"lowPrice"\s*:\s*"?([\d\.]+)"?', html_data)
             if text_match:
                 price_found = float(text_match.group(1))
             
-            # Sub-Layer 3: Global pricing format match (e.g. 79,90 € or 79.90€)
+            # Sub-Layer 3: Global pricing format match (e.g. 79,90 €)
             if not price_found:
-                # Strip raw markup scripts to avoid reading bad parameters
                 clean_text = re.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', html_data, flags=re.DOTALL)
                 clean_text = re.sub(r'<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>', '', clean_text, flags=re.DOTALL)
                 clean_text = re.sub(r'<[^>]+>', ' ', clean_text)
                 
-                # Match values over 40€ to isolate the device from small accessory listings
                 price_strings = re.findall(r'(?:desde\s*|^|\s)(\d{2}[\.,]\d{2})\s*€', clean_text.lower())
                 valid_prices = []
                 for p in price_strings:
