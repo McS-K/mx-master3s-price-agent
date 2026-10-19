@@ -2,30 +2,37 @@ import os
 import re
 import json
 import sys
+import time
 from curl_cffi import requests
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-# URL of the PRODUCT page on idealo (not the home page!).
-# Best practice: store it in a GitHub Actions variable/secret named IDEALO_PRODUCT_URL.
-# Alternatively, paste the link directly into the default value below.
-PRODUCT_URL = os.environ.get(
-    "IDEALO_PRODUCT_URL",
-    "https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html",
-).strip()
+# One entry per monitored product. URLs are read from environment variables
+# (GitHub Actions variables/secrets), so they are not hardcoded here.
+# Remember to pass each variable in the `env:` section of your workflow file.
+PRODUCTS = [
+    {
+        "name": "Logitech MX Master 3S",
+        "url": os.environ.get("https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html", "").strip(),
+        "target": 70.0,         # Test value, replace with the real threshold later
+        "min_plausible": 40.0,  # Anything below is treated as a parsing error
+    },
+    {
+        "name": "Logitech MX Keys S Combo",
+        "url": os.environ.get("https://www.idealo.es/precios/202841996/logitech-mx-keys-s-combo-us.html", "").strip(),
+        "target": 150.0,
+        "min_plausible": 60.0,
+    },
+]
 
-PRODUCT_NAME = "Logitech MX Master 3S"
-TARGET_PRICE = 70.0  # Test value, replace with the real threshold later
-
-# Anything below this is treated as a parsing error (accessory, ad block, etc.)
-MIN_PLAUSIBLE_PRICE = 40.0
+PAUSE_BETWEEN_REQUESTS = 3  # seconds, to be gentle with idealo
 
 
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
-def send_telegram_alert(price, link):
+def send_telegram_alert(name, price, target, link):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
@@ -38,8 +45,8 @@ def send_telegram_alert(price, link):
     # special characters in URLs or text.
     message = (
         f"🚨 Price Drop Alert via Idealo! 🚨\n\n"
-        f"{PRODUCT_NAME} has reached a new low of {price:.2f} €!\n"
-        f"🎯 Your target limit: {TARGET_PRICE:.2f} €\n\n"
+        f"{name} has reached a new low of {price:.2f} €!\n"
+        f"🎯 Your target limit: {target:.2f} €\n\n"
         f"🔗 Deal details page: {link}"
     )
 
@@ -152,13 +159,22 @@ def get_price(html):
 
 
 # ---------------------------------------------------------------------------
-# Main logic
+# Per-product check
 # ---------------------------------------------------------------------------
-def check_price():
-    if not PRODUCT_URL or PRODUCT_URL.startswith("PASTE_YOUR"):
-        print("Error: product page URL is not set. Define IDEALO_PRODUCT_URL "
-              "or edit PRODUCT_URL in agent.py.")
-        return 1
+def check_product(product):
+    """Check one product. Returns True if everything went fine
+    (including 'no discount'), False on any error."""
+    name = product["name"]
+    url = product["url"]
+    target = product["target"]
+    min_plausible = product["min_plausible"]
+
+    print(f"\n=== {name} ===")
+
+    if not url:
+        print("Error: product URL is not set (check the environment variable "
+              "and the `env:` section of your workflow).")
+        return False
 
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -169,44 +185,57 @@ def check_price():
     # Note: User-Agent is intentionally not set manually; impersonate="chrome"
     # sends a consistent browser fingerprint (UA + TLS) on its own.
 
-    print(f"Fetching product page: {PRODUCT_URL}")
+    print(f"Fetching product page: {url}")
     try:
-        response = requests.get(
-            PRODUCT_URL, headers=headers, impersonate="chrome", timeout=15
-        )
+        response = requests.get(url, headers=headers, impersonate="chrome", timeout=15)
     except Exception as e:
         print(f"Request failed: {e}")
-        return 1
+        return False
 
     if response.status_code != 200:
         print(f"Connection aborted by host. Response status: {response.status_code}")
-        return 1
+        return False
 
     price = get_price(response.text)
 
     if price is None:
         print("Could not find the price on the page. The page structure may "
               "have changed, or the URL is not a product page.")
-        return 1
+        return False
 
-    if price < MIN_PLAUSIBLE_PRICE:
-        print(f"Found price {price:.2f} € looks implausible for {PRODUCT_NAME} "
-              f"(below {MIN_PLAUSIBLE_PRICE:.2f} €). Probably a parsing error, "
+    if price < min_plausible:
+        print(f"Found price {price:.2f} € looks implausible for {name} "
+              f"(below {min_plausible:.2f} €). Probably a parsing error, "
               f"skipping alert.")
-        return 1
+        return False
 
     print(f"🏆 Current minimum market price: {price:.2f} €")
 
-    if price < TARGET_PRICE:
-        print(f"Threshold triggered ({price:.2f} < {TARGET_PRICE:.2f})! Sending alert...")
-        if not send_telegram_alert(price, PRODUCT_URL):
-            return 1
-    else:
-        print(f"No discount active. Price ({price:.2f} €) is at or above "
-              f"{TARGET_PRICE:.2f} €.")
+    if price < target:
+        print(f"Threshold triggered ({price:.2f} < {target:.2f})! Sending alert...")
+        return send_telegram_alert(name, price, target, url)
 
-    return 0
+    print(f"No discount active. Price ({price:.2f} €) is at or above {target:.2f} €.")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+def main():
+    results = []
+    for i, product in enumerate(PRODUCTS):
+        if i > 0:
+            time.sleep(PAUSE_BETWEEN_REQUESTS)
+        try:
+            results.append(check_product(product))
+        except Exception as e:
+            # One failing product must never block the others
+            print(f"Unexpected error while checking {product['name']}: {e}")
+            results.append(False)
+
+    return 0 if all(results) else 1
 
 
 if __name__ == "__main__":
-    sys.exit(check_price())
+    sys.exit(main())
