@@ -16,7 +16,7 @@ PRODUCT_URL = os.environ.get(
 ).strip()
 
 PRODUCT_NAME = "Logitech MX Master 3S"
-TARGET_PRICE = 90.0  # Test value, replace with the real threshold later
+TARGET_PRICE = 70.0  # Test value, replace with the real threshold later
 
 # Anything below this is treated as a parsing error (accessory, ad block, etc.)
 MIN_PLAUSIBLE_PRICE = 40.0
