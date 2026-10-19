@@ -1,122 +1,212 @@
 import os
-import json
 import re
+import json
+import sys
 from curl_cffi import requests
 
-# Core configuration setup
-URL_IDEALO = "https://idealo.es"
-TARGET_PRICE = 90.0  # Kept at 90.0 to guarantee a successful Telegram connection test!
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+# URL of the PRODUCT page on idealo (not the home page!).
+# Best practice: store it in a GitHub Actions variable/secret named IDEALO_PRODUCT_URL.
+# Alternatively, paste the link directly into the default value below.
+PRODUCT_URL = os.environ.get(
+    "IDEALO_PRODUCT_URL",
+    "PASTE_YOUR_IDEALO_PRODUCT_PAGE_URL_HERE",
+).strip()
 
+PRODUCT_NAME = "Logitech MX Master 3S"
+TARGET_PRICE = 90.0  # Test value, replace with the real threshold later
+
+# Anything below this is treated as a parsing error (accessory, ad block, etc.)
+MIN_PLAUSIBLE_PRICE = 40.0
+
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
 def send_telegram_alert(price, link):
-    # Fetch environment variables safely
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    
-    if not bot_token or not chat_id:
-        print("Error: Missing configured repository keys inside GitHub Settings.")
-        return
 
+    if not bot_token or not chat_id:
+        print("Error: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing "
+              "(check GitHub Settings -> Secrets).")
+        return False
+
+    # Plain text (no parse_mode): avoids Markdown parsing errors caused by
+    # special characters in URLs or text.
     message = (
-        f"🚨 **Price Drop Alert via Idealo!** 🚨\n\n"
-        f"Logitech MX Master 3S has reached a new low of **{price} €**!\n"
-        f"🎯 Your target limit: {TARGET_PRICE} €\n\n"
+        f"🚨 Price Drop Alert via Idealo! 🚨\n\n"
+        f"{PRODUCT_NAME} has reached a new low of {price:.2f} €!\n"
+        f"🎯 Your target limit: {TARGET_PRICE:.2f} €\n\n"
         f"🔗 Deal details page: {link}"
     )
-    
-    print("Dispatching explicit data payloads to the Telegram API using OS Native Curl...")
-    try:
-        # Escaping the message for safe terminal usage
-        safe_message = message.replace('"', '\\"')
-        
-        # Construct a direct OS system command
-        # This completely completely bypasses Python's internal url-parsing quirks
-        cmd = (
-            f'curl -s -X POST "https://telegram.org{bot_token}/sendMessage" '
-            f'-H "Content-Type: application/json" '
-            f'-d "{{\\"chat_id\\": \\"{chat_id}\\", \\"text\\": \\"{safe_message}\\", \\"parse_mode\\": \\"Markdown\\"}}"'
-        )
-        
-        # Execute the OS level command
-        exit_code = os.system(cmd)
-        if exit_code == 0:
-            print("Success! Notification triggered out to Telegram chat.")
-        else:
-            print(f"OS Curl command exited with error code: {exit_code}")
-            
-    except Exception as e:
-        print(f"Failed running native network alert dispatch: {e}")
 
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "disable_web_page_preview": False,
+    }
+
+    print("Sending notification to the Telegram API...")
+    try:
+        r = requests.post(url, json=payload, timeout=15)
+        if r.status_code == 200:
+            print("Success! Notification sent to Telegram.")
+            return True
+        print(f"Telegram error {r.status_code}: {r.text}")
+        return False
+    except Exception as e:
+        print(f"Failed to send Telegram alert: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Price extraction
+# ---------------------------------------------------------------------------
+def _to_float(value):
+    """Convert '79.90' / '79,90' / 79.9 to float, or return None."""
+    try:
+        return float(str(value).strip().replace(",", "."))
+    except (ValueError, TypeError):
+        return None
+
+
+def _iter_nodes(data):
+    """Recursively yield all dict nodes from a JSON-LD structure
+    (handles lists and '@graph')."""
+    if isinstance(data, dict):
+        yield data
+        for value in data.values():
+            if isinstance(value, (dict, list)):
+                yield from _iter_nodes(value)
+    elif isinstance(data, list):
+        for item in data:
+            yield from _iter_nodes(item)
+
+
+def _is_product(node):
+    node_type = node.get("@type")
+    if isinstance(node_type, list):
+        return "Product" in node_type
+    return node_type == "Product"
+
+
+def _price_from_offers(offers):
+    """Extract the lowest price from an 'offers' object (dict or list)."""
+    if isinstance(offers, list):
+        prices = [p for p in (_price_from_offers(o) for o in offers) if p is not None]
+        return min(prices) if prices else None
+    if isinstance(offers, dict):
+        for key in ("lowPrice", "price"):
+            if key in offers:
+                price = _to_float(offers[key])
+                if price is not None:
+                    return price
+    return None
+
+
+def extract_price_from_jsonld(html):
+    """LAYER 1: structured data (JSON-LD) of the product."""
+    blocks = re.findall(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html,
+        re.DOTALL | re.IGNORECASE,
+    )
+    for block in blocks:
+        try:
+            data = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+        for node in _iter_nodes(data):
+            if _is_product(node) and "offers" in node:
+                price = _price_from_offers(node["offers"])
+                if price is not None:
+                    return price
+    return None
+
+
+def extract_price_from_raw(html):
+    """LAYER 2: look for a lowPrice field anywhere in the raw HTML/JSON."""
+    match = re.search(r'"lowPrice"\s*:\s*"?(\d+(?:[.,]\d+)?)"?', html)
+    if match:
+        return _to_float(match.group(1))
+    return None
+
+
+def get_price(html):
+    price = extract_price_from_jsonld(html)
+    if price is not None:
+        print("Price found via JSON-LD structured data.")
+        return price
+
+    print("JSON-LD not found, trying raw lowPrice fallback...")
+    price = extract_price_from_raw(html)
+    if price is not None:
+        print("Price found via raw lowPrice field.")
+        return price
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Main logic
+# ---------------------------------------------------------------------------
 def check_price():
+    if not PRODUCT_URL or PRODUCT_URL.startswith("PASTE_YOUR"):
+        print("Error: product page URL is not set. Define IDEALO_PRODUCT_URL "
+              "or edit PRODUCT_URL in agent.py.")
+        return 1
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9",
         "Cache-Control": "no-cache",
-        "Pragma": "no-cache"
+        "Pragma": "no-cache",
     }
-    
-    print("Connecting to Idealo target mirrors using client impersonation layers...")
+    # Note: User-Agent is intentionally not set manually; impersonate="chrome"
+    # sends a consistent browser fingerprint (UA + TLS) on its own.
+
+    print(f"Fetching product page: {PRODUCT_URL}")
     try:
-        response = requests.get(URL_IDEALO.strip(), headers=headers, impersonate="chrome", timeout=15)
-        
-        if response.status_code != 200:
-            print(f"Connection aborted by host. Response status: {response.status_code}")
-            return
-            
-        html_data = response.text
-        price_found = None
-
-        # LAYER 1: Attempt standard structural JSON extraction
-        json_ld_matches = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html_data, re.DOTALL)
-        for match in json_ld_matches:
-            try:
-                parsed_json = json.loads(match.strip())
-                if isinstance(parsed_json, dict) and parsed_json.get("@type") == "Product":
-                    offers = parsed_json.get("offers", {})
-                    if isinstance(offers, dict) and "lowPrice" in offers:
-                        price_found = float(offers["lowPrice"])
-                        break
-            except Exception:
-                continue
-
-        # LAYER 2: Text Engine Fallback (If layout is stripped)
-        if not price_found:
-            print("Structural tags omitted by host defense. Initiating visible layout parsing fallback...")
-            text_match = re.search(r'"lowPrice"\s*:\s*"?([\d\.]+)"?', html_data)
-            if text_match:
-                price_found = float(text_match.group(1))
-            
-            # Sub-Layer 3: Global pricing format match (e.g. 79,90 €)
-            if not price_found:
-                clean_text = re.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', html_data, flags=re.DOTALL)
-                clean_text = re.sub(r'<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>', '', clean_text, flags=re.DOTALL)
-                clean_text = re.sub(r'<[^>]+>', ' ', clean_text)
-                
-                price_strings = re.findall(r'(?:desde\s*|^|\s)(\d{2}[\.,]\d{2})\s*€', clean_text.lower())
-                valid_prices = []
-                for p in price_strings:
-                    try:
-                        num = float(p.replace(",", "."))
-                        if num > 40.0:
-                            valid_prices.append(num)
-                    except ValueError:
-                        continue
-                if valid_prices:
-                    price_found = min(valid_prices)
-
-        if price_found:
-            print(f"🏆 Verified current minimum market price: {price_found} €")
-            
-            if float(price_found) < float(TARGET_PRICE):
-                print(f"Market threshold triggered ({price_found} < {TARGET_PRICE})! Dispatching alert notification...")
-                send_telegram_alert(price_found, URL_IDEALO)
-            else:
-                print(f"No discount active. Market minimum ({price_found} €) remains at or above {TARGET_PRICE} €.")
-        else:
-            print("Could not isolate structural monetary tags from target layout or raw page streams.")
-                
+        response = requests.get(
+            PRODUCT_URL, headers=headers, impersonate="chrome", timeout=15
+        )
     except Exception as e:
-        print(f"An unexpected engine error occurred: {e}")
+        print(f"Request failed: {e}")
+        return 1
+
+    if response.status_code != 200:
+        print(f"Connection aborted by host. Response status: {response.status_code}")
+        return 1
+
+    price = get_price(response.text)
+
+    if price is None:
+        print("Could not find the price on the page. The page structure may "
+              "have changed, or the URL is not a product page.")
+        return 1
+
+    if price < MIN_PLAUSIBLE_PRICE:
+        print(f"Found price {price:.2f} € looks implausible for {PRODUCT_NAME} "
+              f"(below {MIN_PLAUSIBLE_PRICE:.2f} €). Probably a parsing error, "
+              f"skipping alert.")
+        return 1
+
+    print(f"🏆 Current minimum market price: {price:.2f} €")
+
+    if price < TARGET_PRICE:
+        print(f"Threshold triggered ({price:.2f} < {TARGET_PRICE:.2f})! Sending alert...")
+        if not send_telegram_alert(price, PRODUCT_URL):
+            return 1
+    else:
+        print(f"No discount active. Price ({price:.2f} €) is at or above "
+              f"{TARGET_PRICE:.2f} €.")
+
+    return 0
+
 
 if __name__ == "__main__":
-    check_price()
+    sys.exit(check_price())
