@@ -3,16 +3,16 @@ import json
 import re
 from curl_cffi import requests
 
-# Idealo product URL containing unified Iberian market offers
-URL_IDEALO = "https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html"
-TARGET_PRICE = 90.0
+# Конфигурация
+URL_IDEALO = "https://idealo.es"
+TARGET_PRICE = 90.0  # Держим 90.0 для теста! После теста верни 70.0
 
 def send_telegram_alert(price, link):
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID").strip()
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     
     if not bot_token or not chat_id:
-        print("Error: Telegram configuration secrets missing.")
+        print("Ошибка: Секреты Телеграма пустые.")
         return
 
     message = (
@@ -25,37 +25,41 @@ def send_telegram_alert(price, link):
     telegram_url = f"https://telegram.org{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
     
-    response = requests.post(telegram_url, json=payload, impersonate="chrome")
-    if response.status_code == 200:
-        print("Success! Notification sent out to Telegram.")
-    else:
-        print(f"Failed sending alert: {response.text}")
+    print("Отправка запроса в API Telegram (без имитации браузера)...")
+    try:
+        # ВАЖНО: Убрали параметр impersonate="chrome". 
+        # Теперь запрос идет как стандартный программный пакет, что и нужно Телеграму!
+        response = requests.post(telegram_url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("Успех! Тестовое уведомление отправлено в Telegram-чат.")
+        else:
+            print(f"Ошибка от API Telegram: {response.text}")
+    except Exception as e:
+        print(f"Критическая ошибка отправки в Телеграм: {e}")
 
 def check_price():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+        "Accept-Language": "es-ES,es;q=0.9"
     }
     
-    print("Connecting to Idealo's open metadata endpoint...")
+    print("Подключение к зеркалу Idealo с имитацией браузера...")
     try:
-        response = requests.get(URL_IDEALO, headers=headers, impersonate="chrome", timeout=15)
+        # Для Idealo имитация браузера ОСТАЕТСЯ, иначе сайт заблокирует
+        response = requests.get(URL_IDEALO.strip(), headers=headers, impersonate="chrome", timeout=15)
         
         if response.status_code != 200:
-            print(f"Connection aborted by host. Response status: {response.status_code}")
+            print(f"Сайт вернул ошибку. Код ответа: {response.status_code}")
             return
             
         html_data = response.text
-        
-        # Scrape via the hidden standard Google Schema metadata block embedded on the page
         json_ld_matches = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html_data, re.DOTALL)
         
         price_found = None
         for match in json_ld_matches:
             try:
                 parsed_json = json.loads(match.strip())
-                # Navigate through the structural schema layer (Product -> offers -> lowPrice)
                 if isinstance(parsed_json, dict) and parsed_json.get("@type") == "Product":
                     offers = parsed_json.get("offers", {})
                     if isinstance(offers, dict) and "lowPrice" in offers:
@@ -64,28 +68,24 @@ def check_price():
             except Exception:
                 continue
 
-        if price_found:
-            print(f"🏆 Unified minimum market price captured: {price_found} €")
-            
-            if price_found < TARGET_PRICE:
-                print("Market threshold triggered! Dispatching message...")
-                send_telegram_alert(price_found, URL_IDEALO)
-            else:
-                print(f"No discount active. Market minimum ({price_found} €) remains at or above {TARGET_PRICE} €.")
-        else:
-            print("Warning: Metadata blocks structural format changed. Capturing simple baseline fallback:")
-            # Alternative direct text match structure fallback if structural JSON elements shift
+        if not price_found:
             text_match = re.search(r'"lowPrice"\s*:\s*([\d\.]+)', html_data)
             if text_match:
-                fallback_price = float(text_match.group(1))
-                print(f"🏆 Backup matched minimum market price: {fallback_price} €")
-                if fallback_price < TARGET_PRICE:
-                    send_telegram_alert(fallback_price, URL_IDEALO)
+                price_found = float(text_match.group(1))
+
+        if price_found:
+            print(f"🏆 Минимальная цена на рынке: {price_found} €")
+            
+            if float(price_found) < float(TARGET_PRICE):
+                print(f"Триггер сработал ({price_found} < {TARGET_PRICE})! Запуск отправки...")
+                send_telegram_alert(price_found, URL_IDEALO)
             else:
-                print("Could not isolate structural monetary tags from target layout.")
+                print(f"Скидки нет. Цена рынка ({price_found} €) выше лимита ({TARGET_PRICE} €).")
+        else:
+            print("Не удалось извлечь цену из разметки страницы.")
                 
     except Exception as e:
-        print(f"An unexpected engine error occurred: {e}")
+        print(f"Произошла ошибка при анализе сайта: {e}")
 
 if __name__ == "__main__":
     check_price()
