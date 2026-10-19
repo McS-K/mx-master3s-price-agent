@@ -1,24 +1,24 @@
 import os
+import re
 from curl_cffi import requests
 
-# Возвращаем отслеживание всего рынка через KuantoKusta
-URL_KK = "https://kuantokusta.pt"
-API_URL = "https://kuantokusta.pt"
+# Страница поиска Google Shopping для Португалии (запрос цены на MX Master 3S)
+URL_GOOGLE = "https://google.com"
 TARGET_PRICE = 70.0
 
-def send_telegram_alert(price, link):
+def send_telegram_alert(price):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     
     if not bot_token or not chat_id:
-        print("Ошибка: Секреты Телеграма не найдены в системе.")
+        print("Ошибка: Секреты Телеграма не найдены.")
         return
 
     message = (
-        f"🚨 **Снижение цены в Португалии!** 🚨\n\n"
-        f"Logitech MX Master 3S сейчас стоит всего **{price} €**!\n"
+        f"🚨 **Снижение цены на MX Master 3S!** 🚨\n\n"
+        f"Google Поиск обнаружил цену **{price} €** на португальском рынке!\n"
         f"Это ниже твоего лимита в {TARGET_PRICE} €.\n\n"
-        f"🔗 Ссылка на KuantoKusta: {link}"
+        f"🔗 Проверь предложения в Google: {URL_GOOGLE}"
     )
     
     telegram_url = f"https://telegram.org{bot_token}/sendMessage"
@@ -28,44 +28,52 @@ def send_telegram_alert(price, link):
     if response.status_code == 200:
         print("Уведомление успешно отправлено в Telegram!")
     else:
-        print(f"Не удалось отправить сообщение: {response.text}")
+        print(f"Ошибка отправки в Telegram: {response.text}")
 
 def check_price():
-    scraperapi_key = os.environ.get("SCRAPERAPI_KEY")
-    if not scraperapi_key:
-        print("Ошибка: Ключ SCRAPERAPI_KEY не найден в секретах GitHub.")
-        return
-
-    print("Запрос к ценовому агрегатору Португалии через прокси-сервер ScraperAPI...")
+    # Обычные заголовки браузера Chrome
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-PT,pt;q=0.9,en-US;q=0.8"
+    }
     
-    # Формируем специальную ссылку для ScraperAPI, которая обойдет Cloudflare
-    proxied_url = f"http://scraperapi.com?api_key={scraperapi_key}&url={API_URL}"
+    print("Запрос к поисковой выдаче Google...")
     
     try:
-        # Делаем запрос через прокси
-        response = requests.get(proxied_url, timeout=30)
+        # Запрашиваем страницу поиска напрямую у Google (он лоялен к GitHub Actions)
+        response = requests.get(URL_GOOGLE, headers=headers, impersonate="chrome", timeout=15)
         
         if response.status_code != 200:
-            print(f"Прокси вернул ошибку. Код ответа: {response.status_code}")
+            print(f"Google вернул код: {response.status_code}")
             return
 
-        data = response.json()
-        lowest_price = data.get("product", {}).get("prices", {}).get("cheapest", {}).get("value")
+        html_content = response.text
         
-        if lowest_price is not None:
-            current_price = float(lowest_price)
-            print(f"Текущая минимальная цена на рынке Португалии: {current_price} €")
+        # Ищем упоминания цен в формате "74,90 €", "74.99 €", "74.00EUR" или "74,00 €"
+        # Регулярное выражение ищет цифры от 50 до 99, за которыми идет символ евро
+        prices_found = re.findall(r'(?:[\s\xa0]|^)([56789]\d[\.,]\d{2})(?:[\s\xa0]*?€|[\s\xa0]*?EUR)', html_content)
+        
+        if prices_found:
+            # Очищаем найденные строки и переводим во float
+            float_prices = []
+            for p in prices_found:
+                clean_p = p.replace(",", ".")
+                float_prices.append(float(clean_p))
             
-            if current_price < TARGET_PRICE:
-                print("Цена ниже целевой! Запуск уведомления...")
-                send_telegram_alert(current_price, URL_KK)
+            # Находим самую низкую цену из тех, что проиндексировал Google
+            min_price = min(float_prices)
+            print(f"Минимальная найденная цена в выдаче Google: {min_price} €")
+            
+            if min_price < TARGET_PRICE:
+                print("Найдена цена ниже целевой! Отправка уведомления...")
+                send_telegram_alert(min_price)
             else:
-                print(f"Скидки пока нет. Цена ({current_price} €) выше или равна {TARGET_PRICE} €.")
+                print(f"Скидки пока нет. Минимальная цена ({min_price} €) выше или равна {TARGET_PRICE} €.")
         else:
-            print("Не удалось распарсить цену из ответа API.")
+            print("Не удалось извлечь блоки цен из поисковой выдачи. Возможно, стоит уточнить поисковый запрос.")
             
     except Exception as e:
-        print(f"Произошла непредвиденная ошибка: {e}")
+        print(f"Произошла ошибка при анализе Google: {e}")
 
 if __name__ == "__main__":
     check_price()
