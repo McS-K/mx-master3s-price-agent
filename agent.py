@@ -12,7 +12,7 @@ from curl_cffi import requests
 # Alternatively, paste the link directly into the default value below.
 PRODUCT_URL = os.environ.get(
     "IDEALO_PRODUCT_URL",
-    "PASTE_YOUR_IDEALO_PRODUCT_PAGE_URL_HERE",
+    "https://www.idealo.es/precios/201968116/logitech-mx-master-3s.html",
 ).strip()
 
 PRODUCT_NAME = "Logitech MX Master 3S"
