@@ -5,15 +5,15 @@ from curl_cffi import requests
 
 # Конфигурация
 URL_IDEALO = "https://idealo.es"
-TARGET_PRICE = 90.0  # Оставляем 90.0 для теста! После теста верни 70.0
+TARGET_PRICE = 90.0  # Оставляем 90.0 для теста отправки!
 
 def send_telegram_alert(price, link):
-    # Принудительная очистка токенов от скрытых пробелов
+    # Извлекаем токены и принудительно очищаем их от скрытых символов переноса строки
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     
     if not bot_token or not chat_id:
-        print("Ошибка: Секреты Телеграма пустые.")
+        print("Ошибка: Секреты Телеграма пустые или не найдены.")
         return
 
     message = (
@@ -23,13 +23,13 @@ def send_telegram_alert(price, link):
         f"🔗 Deal details page: {link}"
     )
     
+    # Формируем чистый URL без лишних пробелов
     telegram_url = f"https://telegram.org{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
     
-    print("Отправка запроса в API Telegram (чистый программный запрос)...")
+    print("Отправка запроса в API Telegram...")
     try:
-        # ВАЖНО: Отправляем БЕЗ impersonate="chrome", чтобы Телеграм не блокировал запрос
-        response = requests.post(telegram_url, json=payload, timeout=10)
+        response = requests.post(telegram_url, json=payload, impersonate="chrome")
         if response.status_code == 200:
             print("Успех! Тестовое уведомление отправлено в Telegram-чат.")
         else:
@@ -41,12 +41,11 @@ def check_price():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9"
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
     }
     
-    print("Подключение к зеркалу Idealo с имитацией браузера...")
+    print("Подключение к зеркалу Idealo...")
     try:
-        # Для Idealo имитация браузера остается обязательной
         response = requests.get(URL_IDEALO.strip(), headers=headers, impersonate="chrome", timeout=15)
         
         if response.status_code != 200:
@@ -54,8 +53,6 @@ def check_price():
             return
             
         html_data = response.text
-        
-        # Твой старый проверенный формат поиска цены через JSON-LD
         json_ld_matches = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html_data, re.DOTALL)
         
         price_found = None
@@ -70,14 +67,13 @@ def check_price():
             except Exception:
                 continue
 
-        # Резервный текстовый поиск по тегу lowPrice
         if not price_found:
             text_match = re.search(r'"lowPrice"\s*:\s*([\d\.]+)', html_data)
             if text_match:
                 price_found = float(text_match.group(1))
 
         if price_found:
-            print(f"🏆 Backup matched minimum market price: {price_found} €")
+            print(f"🏆 Минимальная цена на рынке: {price_found} €")
             
             # Математическое сравнение цен
             if float(price_found) < float(TARGET_PRICE):
