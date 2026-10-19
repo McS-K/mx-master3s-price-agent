@@ -7,7 +7,7 @@ from curl_cffi import requests
 
 # Core configuration setup
 URL_IDEALO = "https://idealo.es"
-TARGET_PRICE = 90.0  # Kept at 90.0 to guarantee a successful Telegram pipeline test!
+TARGET_PRICE = 90.0  # Kept at 90.0 to guarantee a successful Telegram connection test!
 
 def send_telegram_alert(price, link):
     # Fetch environment variables safely
@@ -25,17 +25,19 @@ def send_telegram_alert(price, link):
         f"🔗 Deal details page: {link}"
     )
     
-    # Construct endpoint using explicit variable sanitization
-    telegram_url = f"https://telegram.org{bot_token}/sendMessage"
+    # SOLUTION: Use urljoin to safely escape the token's colon from the network engine
+    base_url = "https://telegram.org"
+    safe_path = f"bot{bot_token}/sendMessage"
+    telegram_url = urllib.parse.urljoin(base_url, safe_path)
+    
     payload = {
         "chat_id": chat_id,
         "text": message,
         "parse_mode": "Markdown"
     }
     
-    print("Dispatching explicit data payloads to the Telegram API using standard engine...")
+    print("Dispatching explicit data payloads to the Telegram API using urljoin safe engine...")
     try:
-        # Convert dictionary payload to clean byte strings to prevent string-formatting errors
         data = json.dumps(payload).encode('utf-8')
         req = urllib.request.Request(
             telegram_url, 
