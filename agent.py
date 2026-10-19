@@ -1,12 +1,11 @@
 import os
-import requests
-# Используем curl_cffi вместо стандартного requests для обхода Cloudflare 403
-from curl_cffi import requests as requests_impersonate
+# Используем исключительно curl_cffi для всех запросов
+from curl_cffi import requests
 
 # Конфигурация агента
 URL_KK = "https://kuantokusta.pt"
 API_URL = "https://kuantokusta.pt"
-TARGET_PRICE = 70.0
+TARGET_PRICE = 75.0
 
 def send_telegram_alert(price, link):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -26,8 +25,8 @@ def send_telegram_alert(price, link):
     telegram_url = f"https://telegram.org{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
     
-    # Для отправки сообщения в Telegram обычный requests подходит отлично
-    response = requests.post(telegram_url, json=payload)
+    # Отправляем уведомление через curl_cffi (работает точно так же)
+    response = requests.post(telegram_url, json=payload, impersonate="chrome")
     if response.status_code == 200:
         print("Уведомление успешно отправлено в Telegram!")
     else:
@@ -43,8 +42,8 @@ def check_price():
     print("Запрос к ценовому агрегатору Португалии с имитацией браузера Chrome...")
     
     try:
-        # Параматер impersonate принудительно копирует TLS-отпечаток настоящего браузера
-        response = requests_impersonate.get(API_URL, headers=headers, impersonate="chrome")
+        # Запрос к API KuantoKusta с TLS-отпечатком Chrome
+        response = requests.get(API_URL, headers=headers, impersonate="chrome")
         
         if response.status_code != 200:
             print(f"Не удалось получить данные. Код ответа: {response.status_code}")
